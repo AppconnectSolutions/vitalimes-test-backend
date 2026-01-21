@@ -15,26 +15,53 @@ import axios from "axios";
 dotenv.config();
 
 const app = express();
-app.use(cors({
-  origin: [
-    "https://appconnect.cloud",
-    "https://api.appconnect.cloud"
-  ],
+
+/* =========================================================
+   TRUST PROXY (IMPORTANT FOR DOKPLOY / TRAEFIK)
+========================================================= */
+app.set("trust proxy", 1);
+
+/* =========================================================
+   CORS CONFIG (PRODUCTION SAFE)
+========================================================= */
+const corsOptions = {
+  origin: "https://appconnect.cloud", // ONLY frontend
   credentials: true,
   methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-  allowedHeaders: ["Content-Type", "Authorization"]
-}));
+  allowedHeaders: ["Content-Type", "Authorization"],
+  exposedHeaders: ["Authorization"]
+};
 
-// IMPORTANT: handle preflight requests
-app.options("*", cors());
+app.use(cors(corsOptions));
 
+/* =========================================================
+   HANDLE PREFLIGHT REQUESTS (CRITICAL FIX)
+========================================================= */
+app.use((req, res, next) => {
+  if (req.method === "OPTIONS") {
+    res.header("Access-Control-Allow-Origin", "https://appconnect.cloud");
+    res.header("Access-Control-Allow-Methods", "GET,POST,PUT,DELETE,OPTIONS");
+    res.header("Access-Control-Allow-Headers", "Content-Type, Authorization");
+    res.header("Access-Control-Allow-Credentials", "true");
+    return res.sendStatus(204);
+  }
+  next();
+});
+
+/* =========================================================
+   BODY PARSERS
+========================================================= */
 app.use(express.json({ limit: "50mb" }));
 app.use(express.urlencoded({ limit: "50mb", extended: true }));
 
-// Multer (memory storage for MinIO)
+/* =========================================================
+   MULTER (MEMORY STORAGE)
+========================================================= */
 const upload = multer({ storage: multer.memoryStorage() });
 
-// MinIO client
+/* =========================================================
+   MINIO / S3 CLIENT
+========================================================= */
 const s3 = new S3Client({
   endpoint: process.env.MINIO_ENDPOINT,
   region: "us-east-1",
@@ -45,15 +72,17 @@ const s3 = new S3Client({
   forcePathStyle: true,
 });
 
-// 🔥 Upload API for products (example)
+/* =========================================================
+   FILE UPLOAD API
+========================================================= */
 app.post("/api/uploads", upload.single("file"), async (req, res) => {
   try {
     if (!req.file) {
       return res.status(400).json({ error: "No file uploaded" });
     }
 
-  const safeName = req.file.originalname.replace(/[^a-zA-Z0-9.\-_]/g, "_");
-const fileName = `uploads/product-${Date.now()}-${safeName}`;
+    const safeName = req.file.originalname.replace(/[^a-zA-Z0-9.\-_]/g, "_");
+    const fileName = `uploads/product-${Date.now()}-${safeName}`;
 
     await s3.send(
       new PutObjectCommand({
@@ -71,32 +100,21 @@ const fileName = `uploads/product-${Date.now()}-${safeName}`;
       url: fileUrl,
     });
   } catch (err) {
-    console.error(err);
+    console.error("Upload error:", err);
     res.status(500).json({ error: "Upload failed" });
   }
 });
 
-
-// Proxy MinIO images through Express
+/* =========================================================
+   IMAGE PROXY (MINIO → EXPRESS)
+========================================================= */
 app.get("/images/:filename", async (req, res) => {
   try {
-    // Decode filename from URL (handles spaces, commas, etc.)
     const filename = decodeURIComponent(req.params.filename);
+    const minioUrl = `${process.env.MINIO_PUBLIC_URL}/${process.env.MINIO_BUCKET}/${filename}`;
 
-    // Construct MinIO URL
-   const minioUrl = `${process.env.MINIO_PUBLIC_URL}/${process.env.MINIO_BUCKET}/${filename}`;
-
-
-
-    // Fetch image from MinIO
-    const response = await axios.get(minioUrl, {
-      responseType: "stream",
-    });
-
-    // Set correct content type
+    const response = await axios.get(minioUrl, { responseType: "stream" });
     res.setHeader("Content-Type", response.headers["content-type"]);
-
-    // Pipe image to client
     response.data.pipe(res);
   } catch (error) {
     console.error("Image fetch error:", error.message);
@@ -104,7 +122,9 @@ app.get("/images/:filename", async (req, res) => {
   }
 });
 
-// 🔥 API Routes
+/* =========================================================
+   API ROUTES
+========================================================= */
 app.use("/api/products", productRoutes);
 app.use("/api/categories", categoryRoutes);
 app.use("/api/orders", orderRoutes);
@@ -113,8 +133,17 @@ app.use("/api/shipments", shipmentRoutes);
 app.use("/api/auth", authRoutes);
 app.use("/api/dashboard", dashboardRoutes);
 
-// Root URL
-app.get("/", (req, res) => res.send("Backend running ✔"));
+/* =========================================================
+   ROOT
+========================================================= */
+app.get("/", (req, res) => {
+  res.send("Backend running ✔");
+});
 
+/* =========================================================
+   SERVER START
+========================================================= */
 const PORT = process.env.PORT || 5000;
-app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
+app.listen(PORT, () => {
+  console.log(`Server running on port ${PORT}`);
+});
