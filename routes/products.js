@@ -31,21 +31,19 @@ function encodeKeyForPath(key) {
 /**
  * DB → API
  * Always return DIRECT MinIO URL (public images)
+ * ⚠️ DO NOT CHANGE (image logic fixed & working)
  */
 function normalizeImageValue(val) {
   if (!val) return null;
 
   let s = String(val).trim();
 
-  // Already full URL
   if (/^https?:\/\//i.test(s)) return s;
 
-  // Remove bucket name if accidentally stored
   if (s.includes(`/${MINIO_BUCKET}/`)) {
     s = s.split(`/${MINIO_BUCKET}/`)[1];
   }
 
-  // Ensure uploads/ prefix
   if (!s.startsWith("uploads/")) {
     s = `uploads/${s}`;
   }
@@ -55,19 +53,17 @@ function normalizeImageValue(val) {
 
 /**
  * API → DB
- * Always store ONLY object key
+ * Store ONLY object key
  */
 function normalizeForStorage(val) {
   if (!val) return null;
 
   let s = String(val).trim();
 
-  // Full MinIO URL
   if (s.includes(`/${MINIO_BUCKET}/`)) {
     return s.split(`/${MINIO_BUCKET}/`)[1];
   }
 
-  // Proxy or relative uploads path
   if (s.includes("/uploads/")) {
     return decodeURIComponent(s.split("/uploads/")[1]);
   }
@@ -80,7 +76,7 @@ function normalizeForStorage(val) {
 ================================ */
 const upload = multer({
   storage: multer.memoryStorage(),
-  limits: { fileSize: 10 * 1024 * 1024 }, // 10MB
+  limits: { fileSize: 10 * 1024 * 1024 },
 });
 
 /* ===============================
@@ -114,7 +110,7 @@ router.post("/upload", upload.single("file"), async (req, res) => {
 });
 
 /* ==================================================
-   GET ALL PRODUCTS (Products + Featured Products)
+   GET ALL PRODUCTS (Products + Featured)
 ================================================== */
 router.get("/", async (req, res) => {
   try {
@@ -194,9 +190,17 @@ router.post("/", async (req, res) => {
       video = null,
     } = req.body;
 
-    const storedImages = images.map(normalizeForStorage);
-    const imageList = Array(6).fill(null);
+    // ✅ sanitize optional fields
+    const cleanHsn = hsn || null;
+    const cleanUnits = units || null;
+    const cleanVideo = video || null;
 
+    // ✅ safe images
+    const storedImages = Array.isArray(images)
+      ? images.map(normalizeForStorage)
+      : [];
+
+    const imageList = Array(6).fill(null);
     storedImages.slice(0, 6).forEach((img, idx) => {
       imageList[idx] = img;
     });
@@ -210,17 +214,28 @@ router.post("/", async (req, res) => {
         title,
         description,
         category,
-        hsn,
+        cleanHsn,
         status,
-        units,
+        cleanUnits,
         ...imageList,
-        video,
+        cleanVideo,
       ]
     );
 
     const productId = result.insertId;
-    const variantList =
-      typeof variants === "string" ? JSON.parse(variants) : variants || [];
+
+    // ✅ safe variants
+    let variantList = [];
+    try {
+      variantList =
+        typeof variants === "string"
+          ? JSON.parse(variants || "[]")
+          : Array.isArray(variants)
+          ? variants
+          : [];
+    } catch {
+      return res.status(400).json({ error: "Invalid variants format" });
+    }
 
     for (const v of variantList) {
       await connection.query(
@@ -243,24 +258,10 @@ router.post("/", async (req, res) => {
 
     await connection.commit();
 
-    const [[product]] = await connection.query(
-      `SELECT * FROM products WHERE id = ?`,
-      [productId]
-    );
-    const [productVariants] = await connection.query(
-      `SELECT * FROM product_variants WHERE product_id = ?`,
-      [productId]
-    );
-
-    product.variants = productVariants;
-
-    for (let i = 1; i <= 6; i++) {
-      product[`image${i}`] = normalizeImageValue(product[`image${i}`]);
-    }
-
-    res.json({ success: true, product });
+    res.json({ success: true, productId });
   } catch (err) {
     await connection.rollback();
+    console.error("ADD PRODUCT ERROR:", err);
     res.status(500).json({ error: err.message });
   } finally {
     connection.release();
@@ -287,27 +288,33 @@ router.put("/:id", async (req, res) => {
       video = null,
     } = req.body;
 
-    const storedImages = images.map(normalizeForStorage);
-    const imageList = Array(6).fill(null);
+    const cleanHsn = hsn || null;
+    const cleanUnits = units || null;
+    const cleanVideo = video || null;
 
+    const storedImages = Array.isArray(images)
+      ? images.map(normalizeForStorage)
+      : [];
+
+    const imageList = Array(6).fill(null);
     storedImages.slice(0, 6).forEach((img, idx) => {
       imageList[idx] = img;
     });
 
     await connection.query(
       `UPDATE products SET
-       title = ?, description = ?, category = ?, hsn = ?, status = ?, units = ?,
-       image1 = ?, image2 = ?, image3 = ?, image4 = ?, image5 = ?, image6 = ?, video = ?
-       WHERE id = ?`,
+       title=?, description=?, category=?, hsn=?, status=?, units=?,
+       image1=?, image2=?, image3=?, image4=?, image5=?, image6=?, video=?
+       WHERE id=?`,
       [
         title,
         description,
         category,
-        hsn,
+        cleanHsn,
         status,
-        units,
+        cleanUnits,
         ...imageList,
-        video,
+        cleanVideo,
         req.params.id,
       ]
     );
@@ -317,8 +324,17 @@ router.put("/:id", async (req, res) => {
       [req.params.id]
     );
 
-    const variantList =
-      typeof variants === "string" ? JSON.parse(variants) : variants || [];
+    let variantList = [];
+    try {
+      variantList =
+        typeof variants === "string"
+          ? JSON.parse(variants || "[]")
+          : Array.isArray(variants)
+          ? variants
+          : [];
+    } catch {
+      return res.status(400).json({ error: "Invalid variants format" });
+    }
 
     for (const v of variantList) {
       await connection.query(
@@ -341,18 +357,10 @@ router.put("/:id", async (req, res) => {
 
     await connection.commit();
 
-    const [[product]] = await connection.query(
-      `SELECT * FROM products WHERE id = ?`,
-      [req.params.id]
-    );
-
-    for (let i = 1; i <= 6; i++) {
-      product[`image${i}`] = normalizeImageValue(product[`image${i}`]);
-    }
-
-    res.json({ success: true, product });
+    res.json({ success: true });
   } catch (err) {
     await connection.rollback();
+    console.error("UPDATE PRODUCT ERROR:", err);
     res.status(500).json({ error: err.message });
   } finally {
     connection.release();
@@ -383,7 +391,7 @@ router.delete("/:id", async (req, res) => {
       return res.status(404).json({ error: "Product not found" });
     }
 
-    res.json({ success: true, message: "Product deleted successfully" });
+    res.json({ success: true });
   } catch (err) {
     await connection.rollback();
     res.status(500).json({ error: err.message });
