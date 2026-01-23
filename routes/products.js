@@ -169,23 +169,35 @@ router.get("/:id", async (req, res) => {
 ================================================== */
 router.post("/", productUpload, async (req, res) => {
   const connection = await db.getConnection();
-  try {
-    await connection.beginTransaction();
 
-    const {
-      title,
-      description,
-      category,
-      hsn,
-      status = "Active",
-      units,
-      variants,
-    } = req.body;
+  // helper: safe JSON parse
+  const parseJson = (v, def) => {
+    try {
+      if (!v) return def;
+      if (typeof v === "string") return JSON.parse(v);
+      return v; // already object/array
+    } catch {
+      return def;
+    }
+  };
+
+  try {
+    // ✅ accept both title and name
+    const title = String(req.body.title || req.body.name || "").trim();
+    const category = String(req.body.category || req.body.category_id || "").trim();
+
+    const description = req.body.description ?? null;
+    const hsn = req.body.hsn ?? null;
+    const status = req.body.status || "Active";
+    const units = req.body.units ?? null;
 
     if (!title || !category) {
-      return res.status(400).json({ error: "Title & category required" });
+      return res.status(400).json({ success: false, error: "Title & category required" });
     }
 
+    await connection.beginTransaction();
+
+    // ✅ upload only provided files
     const imageList = Array(6).fill(null);
 
     for (let i = 1; i <= 6; i++) {
@@ -199,34 +211,28 @@ router.post("/", productUpload, async (req, res) => {
           file.size,
           { "Content-Type": file.mimetype }
         );
-        imageList[i - 1] = key;
+        imageList[i - 1] = key; // store key in DB
       }
     }
 
     const [result] = await connection.query(
       `INSERT INTO products
-      (title, description, category, hsn, status, units,
-       image1,image2,image3,image4,image5,image6, created_at)
+       (title, description, category, hsn, status, units,
+        image1,image2,image3,image4,image5,image6, created_at)
        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,NOW())`,
-      [
-        title,
-        description,
-        category,
-        hsn || null,
-        status,
-        units || null,
-        ...imageList,
-      ]
+      [title, description, category, hsn, status, units, ...imageList]
     );
 
     const productId = result.insertId;
-    const variantList = JSON.parse(variants || "[]");
+
+    // ✅ if variants insert fails, whole product will rollback
+    const variantList = parseJson(req.body.variants, []);
 
     for (const v of variantList) {
       await connection.query(
         `INSERT INTO product_variants
-        (product_id, weight, price, sale_price,
-         offer_percent, tax_percent, tax_amount, stock)
+         (product_id, weight, price, sale_price, offer_percent,
+          tax_percent, tax_amount, stock)
          VALUES (?,?,?,?,?,?,?,?)`,
         [
           productId,
@@ -242,10 +248,23 @@ router.post("/", productUpload, async (req, res) => {
     }
 
     await connection.commit();
-    res.json({ success: true, productId });
+    return res.json({ success: true, productId });
   } catch (err) {
-    await connection.rollback();
-    res.status(500).json({ error: err.message });
+    // ✅ ALWAYS log full error (this is what you need)
+    console.error("🔥 ADD PRODUCT ERROR:", {
+      message: err.message,
+      code: err.code,
+      errno: err.errno,
+      sqlMessage: err.sqlMessage,
+      sql: err.sql,
+    });
+
+    try { await connection.rollback(); } catch {}
+
+    return res.status(500).json({
+      success: false,
+      error: err.sqlMessage || err.message,
+    });
   } finally {
     connection.release();
   }
