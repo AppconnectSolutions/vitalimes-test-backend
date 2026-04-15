@@ -1,0 +1,10 @@
+.env
+.env.*
+node_modules/
+backend/node_modules/
+vitalimes/node_modules/
+backend/uploads/
+*.log
+*.bak
+*.backup
+
