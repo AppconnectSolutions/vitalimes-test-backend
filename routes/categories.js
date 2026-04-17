@@ -45,7 +45,7 @@ function buildObjectKey(originalname) {
   const safeBase = sanitizeFilename(base).slice(0, 50) || "image";
   const uuid = crypto.randomUUID();
   // ✅ store under uploads/categories/
-  return `uploads/categories/${Date.now()}-${uuid}-${safeBase}${ext}`;
+  return `uploads/${Date.now()}-${uuid}-${safeBase}${ext}`;
 }
 
 // Extract a minio key from DB stored value
