@@ -80,9 +80,9 @@ router.get("/", async (req, res) => {
 
     // If images are stored in backend/uploads/products/
     const updatedRows = rows.map(row => ({
-      ...row,
-      product_image: `http://localhost:5000/uploads/products/${row.product_image}`
-    }));
+  ...row,
+  product_image: row.product_image // ✅ send raw value only
+}));
 
     res.json({ success: true, feedbacks: updatedRows });
   } catch (err) {
